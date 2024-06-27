@@ -86,7 +86,12 @@ my $checkBackupSets = sub {
     my $self = shift;
 
     for my $backupSet (@{$self->backupSets}){
-
+        # Note that we only normally call this either when we walk all
+        # known backup/retention schedules (datasets with at least one
+        # local "org.znapzend:..." property), or just once for a single
+        # "--runonce=..." backupSet (not recursing into children with
+        # their exceptional settings then, unless also "--recursive").
+        #
         # In case there is only one property on this dataset, which is the
         # "enabled" flag and is set to "off"; consider it a normal situation
         # and do not even notify it. This situation will appear when there
@@ -94,15 +99,40 @@ my $checkBackupSets = sub {
         # Note: backupSets will have at least the key "src". Therefore, we
         # need to skip the dataset if there are two properties and one of
         # them is "enabled".
-        if (keys(%{$backupSet}) eq 2 && exists($backupSet->{"enabled"})){
-            next;
-        }
-
+        #
         # Similarly for datasets which declare both the "enabled" flag and
         # the "recursion" flag (e.g. to prune whole dataset sub-trees from
         # backing up with znapzend) by configuring only the root of such
         # sub-tree.
-        if (keys(%{$backupSet}) eq 3 && exists($backupSet->{"enabled"}) && exists($backupSet->{"recursive"})){
+        #
+        # Likewise, skip checking datasets (enabled or not) that have only
+        # an autoCreation setting for particular destination(s); note that
+        # ZFS property names must be lower-case (so "c" is small here).
+        # Hence we prepare a filtered set of configuration keys ("dst" name
+        # tags are user-provided and not too predictable), so only "src"
+        # would remain there:
+        my @backupSetKeysFiltered = grep (!/^dst_[^_]+_autocreation$/, keys(%{$backupSet}));
+        my @backupSetKeysFilteredAway = grep (/^dst_[^_]+_autocreation$/, keys(%{$backupSet}));
+        my $backupSetKeysFiltered = scalar(@backupSetKeysFiltered);
+        my $backupSetKeysFilteredAway = scalar(@backupSetKeysFilteredAway);
+        $self->zLog->debug("#checkBackupSets# backupSetKeysFiltered "
+            . "for '" . $backupSet->{src} . "' = ("
+            . $backupSetKeysFiltered . ")["
+            .  join(", ", @backupSetKeysFiltered) . "] "
+            . "and backupSetKeysFilteredAway (not impacting some of the checks) = ("
+            . $backupSetKeysFilteredAway . ")["
+            .  join(", ", @backupSetKeysFilteredAway) . "]"
+            ) if $self->debug;
+
+        # "src" and "enabled", or "src" alone (after disregarding autocreation):
+        if ( ($backupSetKeysFiltered eq 2 and exists($backupSet->{"enabled"}))
+            or $backupSetKeysFiltered eq 1
+        ) {
+            next;
+        }
+
+        # "src", "enabled" and "recursion" (after disregarding autocreation):
+        if ($backupSetKeysFiltered eq 3 && exists($backupSet->{"enabled"}) && exists($backupSet->{"recursive"})){
             next;
         }
 
@@ -245,7 +275,7 @@ my $checkBackupSets = sub {
                 };
             }
         }
-        #drop destination plans where destination is not given (e.g. calling create w/o a destination but a plan
+        #drop destination plans where destination is not given (e.g. calling create w/o a destination but a plan)
         for my $dst (grep { /^dst_[^_]+_plan$/ } keys %$backupSet){
             $dst =~ s/_plan//; #remove trailing '_plan' so we get destination
 
@@ -504,6 +534,144 @@ sub disableBackupSetDst {
 
         if ($cfg{$dest}) {
             $cfg{$dest . '_enabled'} = 'off';
+        } else {
+            die "ERROR: dataset $dataSet backup plan does not have destination $dest\n";
+        }
+        $self->setBackupSet(\%cfg);
+
+        return 1;
+    }
+
+    return 0;
+}
+
+sub enableBackupSetDstAutoCreation {
+    my $self = shift;
+    my $dataSet = shift;
+    my $dest = shift;
+    my $recurse = shift; # may be undef
+    my $inherit = shift; # may be undef
+
+    $self->zfs->dataSetExists($dataSet) or die "ERROR: dataset $dataSet does not exist\n";
+
+    $self->backupSets($self->zfs->getDataSetProperties($dataSet, $recurse, $inherit));
+
+    if (@{$self->backupSets}){
+        my %cfg = %{$self->backupSets->[0]};
+
+        if ( !($dest =~ /^dst_[^_]+$/) ) {
+            if ($cfg{'dst_' . $dest}) {
+                # User passed valid key of the destination config,
+                # convert to zfs attribute/perl struct name part
+                $dest = 'dst_' . $dest;
+            } elsif ($dest =~ /^DST:/) {
+                my $desttemp = $dest;
+                $desttemp =~ s/^DST:// ;
+                if ($cfg{'dst_' . $desttemp}) {
+                    # User passed valid key of the destination config,
+                    # convert to zfs attribute/perl struct name part
+                    $dest = 'dst_' . $desttemp;
+                }
+            }
+            # TODO: Else search by value of 'dst_N' as a "(remote@)dataset"
+        }
+
+        if ($cfg{$dest}) {
+            $self->zLog->debug("#enableBackupSetDstAutoCreation# applying to dest=$dest of $dataSet backup plan") if $self->debug;
+            $cfg{$dest . '_autocreation'} = 'on';
+        } else {
+            die "ERROR: dataset $dataSet backup plan does not have destination $dest\n";
+        }
+        $self->setBackupSet(\%cfg);
+
+        return 1;
+    }
+
+    $self->zLog->debug("#enableBackupSetDstAutoCreation# found no backupSets for $dataSet backup plan") if $self->debug;
+    return 0;
+}
+
+sub disableBackupSetDstAutoCreation {
+    my $self = shift;
+    my $dataSet = shift;
+    my $dest = shift;
+    my $recurse = shift; # may be undef
+    my $inherit = shift; # may be undef
+
+    $self->zfs->dataSetExists($dataSet) or die "ERROR: dataset $dataSet does not exist\n";
+
+    $self->backupSets($self->zfs->getDataSetProperties($dataSet, $recurse, $inherit));
+
+    if (@{$self->backupSets}){
+        my %cfg = %{$self->backupSets->[0]};
+
+        if ( !($dest =~ /^dst_[^_]+$/) ) {
+            if ($cfg{'dst_' . $dest}) {
+                # User passed valid key of the destination config,
+                # convert to zfs attribute/perl struct name part
+                $dest = 'dst_' . $dest;
+            } elsif ($dest =~ /^DST:/) {
+                my $desttemp = $dest;
+                $desttemp =~ s/^DST:// ;
+                if ($cfg{'dst_' . $desttemp}) {
+                    # User passed valid key of the destination config,
+                    # convert to zfs attribute/perl struct name part
+                    $dest = 'dst_' . $desttemp;
+                }
+            }
+            # TODO: Else search by value of 'dst_N' as a "(remote@)dataset"
+        }
+
+        if ($cfg{$dest}) {
+            $self->zLog->debug("#disableBackupSetDstAutoCreation# applying to dest=$dest of $dataSet backup plan") if $self->debug;
+            $cfg{$dest . '_autocreation'} = 'off';
+        } else {
+            die "ERROR: dataset $dataSet backup plan does not have destination $dest\n";
+        }
+        $self->setBackupSet(\%cfg);
+
+        return 1;
+    }
+
+    $self->zLog->debug("#disableBackupSetDstAutoCreation# found no backupSets for $dataSet backup plan") if $self->debug;
+    return 0;
+}
+
+sub inheritBackupSetDstAutoCreation {
+    my $self = shift;
+    my $dataSet = shift;
+    my $dest = shift;
+    my $recurse = shift; # may be undef
+    my $inherit = shift; # may be undef
+
+    $self->zfs->dataSetExists($dataSet) or die "ERROR: dataset $dataSet does not exist\n";
+
+    $self->backupSets($self->zfs->getDataSetProperties($dataSet, $recurse, $inherit));
+
+    if (@{$self->backupSets}){
+        my %cfg = %{$self->backupSets->[0]};
+
+        if ( !($dest =~ /^dst_[^_]+$/) ) {
+            if ($cfg{'dst_' . $dest}) {
+                # User passed valid key of the destination config,
+                # convert to zfs attribute/perl struct name part
+                $dest = 'dst_' . $dest;
+            } elsif ($dest =~ /^DST:/) {
+                my $desttemp = $dest;
+                $desttemp =~ s/^DST:// ;
+                if ($cfg{'dst_' . $desttemp}) {
+                    # User passed valid key of the destination config,
+                    # convert to zfs attribute/perl struct name part
+                    $dest = 'dst_' . $desttemp;
+                }
+            }
+            # TODO: Else search by value of 'dst_N' as a "(remote@)dataset"
+        }
+
+        if ($cfg{$dest}) {
+            if ($cfg{$dest . '_autocreation'}) {
+                $cfg{$dest . '_autocreation'} = undef;
+            }
         } else {
             die "ERROR: dataset $dataSet backup plan does not have destination $dest\n";
         }

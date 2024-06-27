@@ -23,7 +23,8 @@ jobs:
             version: 20.04
           - distribution: ubuntu
             version: 22.04
-
+          - distribution: ubuntu
+            version: 24.04
 
     runs-on: ubuntu-latest
     name: Build package for ${{ matrix.distribution }} ${{ matrix.version }}
@@ -45,7 +46,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: thirdparty
-          key: ${{ matrix.distribution }}-cpan-${{ matrix.version }}-${{ hashFiles('cpanfile', '*/cpanfile', 'Makefile.am', '*/Makefile.am') }}
+          key: ${{ matrix.distribution }}-cpan-${{ matrix.version }}-${{ hashFiles('cpanfile.common', '*/cpanfile', 'Makefile.am', '*/Makefile.am') }}
       - name: Build package
         id: build_package
         run: bash build_deb.sh ${{ matrix.distribution }} ${{ matrix.version }}

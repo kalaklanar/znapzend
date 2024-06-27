@@ -8,14 +8,14 @@ SUFFIXES = .1 .man .pm
 SUBDIRS = lib thirdparty debian
 
 BIN = bin/@PACKAGE@ bin/znapzendzetup bin/znapzendztatz
-PM  = @PERL_MODULES@
+PM  = @PERL_MODULES_EXTRA_DIST@
 MAN = man/znapzend.1 man/znapzendzetup.1 man/znapzendztatz.1
 POD = doc/znapzend.pod doc/znapzendzetup.pod doc/znapzendztatz.pod
 
 RM_F = $(RM) -f
 
 GENERATED_EXTRADIST = $(MAN)
-EXTRA_DIST = VERSION COPYRIGHT README.md LICENSE CHANGES AUTHORS cpanfile $(BIN) $(PM) \
+EXTRA_DIST = VERSION COPYRIGHT README.md LICENSE CHANGES AUTHORS cpanfile.common cpanfile.test $(BIN) $(PM) \
 	$(GENERATED_EXTRADIST) init/README.md init/org.znapzend.plist.in  init/znapzend.default  \
 	init/znapzend.service.in  init/znapzend.sysv.in  init/znapzend.upstart.in  init/znapzend.xml.in \
 	t/autoscrub.t t/ssh t/znapzend.t t/znapzendztatz.t t/mbuffer \
@@ -62,8 +62,15 @@ install-exec-hook:
 	cd "$(DESTDIR)$(exec_prefix)" && $(PERL) -i -p -e 's{^use .*# LIBDIR}{use lib qw($(libdir)); # LIBDIR}' $(BIN)
 	cd "$(DESTDIR)$(exec_prefix)" && $(PERL) -i -p -e 's{^#!.*perl.*}{#!$(PERL)};' $(BIN)
 
+cpanfile: cpanfile.common
+	cp "$?" "$@"
+
+test-deps:
+	+cd thirdparty && $(MAKE) $(AM_MAKEFLAGS) test-deps
+
 if !DEB_BUILD
-check:
+check: test-deps
+	@echo "NOTE: You may want to also/instead run test.sh" >&2
 	$(PERL) -Ithirdparty/lib/perl5 "-MExtUtils::Command::MM" "-e" "test_harness(1, 'lib','thirdparty/lib/perl5')" $(srcdir)/t/*.t
 endif
 
